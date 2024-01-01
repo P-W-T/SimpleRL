@@ -44,9 +44,9 @@ def play_env(observation, env, model, steps, device='cpu'):
         # Unsqueeze is used to add batch dimension, which is required for most PyTorch models
         with torch.no_grad():
             action = model.sample(torch.unsqueeze(torch.tensor(observation, dtype=torch.float32, device=device), dim=0))
-        
+
         # Execute the action in the environment and get the next observation, reward, and status
-        observation, reward, terminated, truncated, _ = env.step(action[0])
+        observation, reward, terminated, truncated, _ = env.step(action)
         reward_list.append(reward)
         action_list.append(action)
         step += 1
@@ -132,7 +132,9 @@ def loss_fn(model, observation_tensor, action_tensor, weight_tensor, beta):
     """
     # Compute the log probability of the actions taken
     logp = torch.squeeze(model.log_prob(observation_tensor, action_tensor))
-
+    #print(action_tensor)
+    #print(model.log_prob(observation_tensor, action_tensor))
+    #print(logp)
     # Calculate the policy gradient loss
     policy_loss = -(logp * weight_tensor).mean()
 
@@ -231,10 +233,10 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     return reward_sum, reward_len
 
 
-def train(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
+def train(model_policy, model_Vn, save_name, env_name, lam, discount, beta, train_Vn,
           n_cycles, n_games_per_cycle, report_updates,
           gradient_clip_policy=None, gradient_clip_Vn=None, median_stop_threshold=None,
-          median_stop_patience=None, length=False, 
+          median_stop_patience=None, length=False, save_cycles=None, 
           policy_lr=0.001, policy_beta1=0.9, policy_beta2=0.999, policy_eps=1e-08, 
           Vn_lr=0.001, Vn_beta1=0.9, Vn_beta2=0.999, Vn_eps=1e-08, device='cpu', inference_device='cpu'):
     """
@@ -244,6 +246,7 @@ def train(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     model_policy (torch.nn.Module): The policy model.
     model_Vn (torch.nn.Module): The value network model.
     env_name (str): Name of the Gym environment.
+    save_name (str): Base name for saving model states and the outputs.
     lam (float): Lambda parameter for GAE.
     discount (float): Discount factor for future rewards.
     beta (float): Coefficient for entropy regularization.
@@ -258,6 +261,7 @@ def train(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     median_stop_threshold (float, optional): Threshold for early stopping based on median reward.
     median_stop_patience (int, optional): Patience for early stopping based on median reward.
     length (bool, optional): Whether to report game lengths instead of rewards.
+    save_cycles (int): Frequency of saving model states and statistics.
     policy_lr (float): Learning rate for the policy optimizer.
     policy_beta1 (float): Beta1 parameter for the policy optimizer (Adam).
     policy_beta2 (float): Beta2 parameter for the policy optimizer (Adam).
@@ -286,6 +290,13 @@ def train(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
         
         reward_sum[cycle,:] = curr_sum
         reward_len[cycle,:] = curr_len
+        
+        # Saving model and results            
+        if save_cycles is not None and cycle%save_cycles==0:
+            torch.save(model_policy.state_dict(), save_name + "_policy.pt")
+            torch.save(model_Vn.state_dict(), save_name + "_Vn.pt")
+            np.savetxt(save_name + "_episoderewards.csv", reward_sum[:cycle+1,:], delimiter=',')
+            np.savetxt(save_name + "_episodelength.csv", reward_len[:cycle+1,:], delimiter=',')
         
         if report_updates is not None and cycle>0 and cycle%report_updates==0:
             if length:
@@ -340,5 +351,10 @@ if __name__ == "__main__":
     model_policy = current_policy
     model_Vn = current_Vn
         
-    train(model_policy, model_Vn, **settings)
+    reward_sum, reward_len = train(model_policy, model_Vn, args.exp_name, **settings)
     
+    # Saving the training results and model states
+    np.savetxt(args.exp_name + "_episoderewards.csv", reward_sum, delimiter=',')
+    np.savetxt(args.exp_name + "_episodelength.csv", reward_len, delimiter=',')   
+    torch.save(model_policy.state_dict(), args.exp_name + "_policy.pt")
+    torch.save(model_Vn.state_dict(), args.exp_name + "_Vn.pt")
