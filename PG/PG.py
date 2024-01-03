@@ -59,10 +59,10 @@ def play_env(observation, env, model, steps, device='cpu'):
     # Add the final observation to the observation list
     observation_list.append(observation)
     
-    return np.array(observation_list), action_list, reward_list, final
+    return np.array(observation_list), np.array(action_list), reward_list, final
 
     
-def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam, device='cpu'):      
+def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam, inference_batch=None, device='cpu'):      
     """
     Calculate the Generalized Advantage Estimation (GAE) for given observations, actions, and rewards.
 
@@ -74,21 +74,34 @@ def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam
     final (bool): A flag indicating if the final state is terminal.
     discount (float): Discount factor for future rewards.
     lam (float): Lambda parameter for GAE.
+    inference_batch (int): If not None, makes sure batches are being used.
     device (str): The device ('cpu' or 'cuda') used for tensor computations.
 
     Returns:
     tuple: A tuple containing discounted rewards, processed observations,
            processed actions, and calculated advantages.
     """
-    
     factor = lam*discount
-    observations = torch.tensor(observations, dtype=torch.float32, device=device)
-    actions = torch.unsqueeze(torch.tensor(actions, dtype=torch.float32, device=device), dim=-1)
-    rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-    
     # Evaluate the value function for each observation
     with torch.no_grad():
-        raw_Vn = torch.squeeze(model_Vn(observations))
+        if inference_batch is None:
+            observations = torch.tensor(observations, dtype=torch.float32, device=device)
+            actions = torch.tensor(actions, dtype=torch.float32, device=device)
+            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+            
+            raw_Vn = torch.squeeze(model_Vn(observations))
+        
+        else:
+            observations = torch.tensor(observations, dtype=torch.float32, device='cpu')
+            actions = torch.tensor(actions, dtype=torch.float32, device='cpu')
+            rewards = torch.tensor(rewards, dtype=torch.float32, device='cpu')
+            
+            batch_num = math.ceil(len(observations)/inference_batch)   
+            raw_Vn = []
+            for i in range(batch_num):
+                raw_Vn.append(model_Vn(observations[i*inference_batch:(i+1)*inference_batch].to(device)).to('cpu'))
+
+            raw_Vn = torch.squeeze(torch.cat(raw_Vn, dim=0))
     
     # Prepare value function estimates for current and next states
     Vn = raw_Vn[:-1]
@@ -116,7 +129,7 @@ def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam
     return discount_rewards, new_observations, new_actions, new_advantages
 
 
-def loss_fn(model, observation_tensor, action_tensor, weight_tensor, beta):
+def loss_fn(model, observation_tensor, action_tensor, weight_tensor, beta, training_batch=None, device='cpu'):
     """
     Calculate the loss for a policy network with entropy regularization.
 
@@ -126,15 +139,22 @@ def loss_fn(model, observation_tensor, action_tensor, weight_tensor, beta):
     action_tensor (torch.Tensor): Tensor of actions taken.
     weight_tensor (torch.Tensor): Tensor of weights (advantages or returns).
     beta (float): Coefficient for entropy regularization.
+    training_batch (int, optional): If not None, makes sure batches are being used at training time.
+    device (str, optional): The device to run the training computations if training_batch is used ('cpu' or 'cuda').
 
     Returns:
     torch.Tensor: The calculated loss value.
     """
     # Compute the log probability of the actions taken
-    logp = torch.squeeze(model.log_prob(observation_tensor, action_tensor))
-    #print(action_tensor)
-    #print(model.log_prob(observation_tensor, action_tensor))
-    #print(logp)
+    if training_batch is None:
+        logp = torch.squeeze(model.log_prob(observation_tensor, action_tensor))
+    else:
+        batch_num = math.ceil(len(observation_tensor)/training_batch)
+        logp = []
+        for i in range(batch_num):
+            logp.append(model.log_prob(observation_tensor[i*training_batch:(i+1)*training_batch].to(device), action_tensor[i*training_batch:(i+1)*training_batch].to(device)).cpu())
+        logp = torch.squeeze(torch.cat(logp, dim=0))
+
     # Calculate the policy gradient loss
     policy_loss = -(logp * weight_tensor).mean()
 
@@ -149,7 +169,7 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
                 optimizer_policy, optimizer_Vn,
                 n_games_per_cycle=1, gradient_clip_policy=None,
                 gradient_clip_Vn=None, median_stop_threshold=None,
-                median_stop_patience=None, device='cpu', inference_device='cpu'):
+                median_stop_patience=None, inference_batch=None, training_batch=None, device='cpu', inference_device='cpu'):
     """
     Train the agent for a specified number of games per cycle.
 
@@ -168,6 +188,8 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     gradient_clip_Vn (float, optional): Gradient clipping value for value network.
     median_stop_threshold (float, optional): Threshold for early stopping based on median reward.
     median_stop_patience (int, optional): Patience for early stopping based on median reward.
+    inference_batch (int, optional): If not None, makes sure batches are being used at inference time.
+    training_batch (int, optional): If not None, makes sure batches are being used at training time.
     device (str, optional): The device to run the training computations ('cpu' or 'cuda').
     inference_device (str, optional): The device to run the inference computations ('cpu' or 'cuda').
     
@@ -194,7 +216,7 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
         reward_sum[i] = np.sum(reward_cur)
         reward_len[i] = len(reward_cur)      
         
-        discount_rewards, new_observations, new_actions, new_advantages = advantage_GAE(observation_cur, action_cur, reward_cur, model_Vn, final, discount, lam, inference_device)
+        discount_rewards, new_observations, new_actions, new_advantages = advantage_GAE(observation_cur, action_cur, reward_cur, model_Vn, final, discount, lam, inference_batch, inference_device)
         
         if discount_rewards_list is None:
             discount_rewards_list = discount_rewards
@@ -209,13 +231,15 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     
     if inference_device != device:
         model_policy, model_Vn = model_policy.to(device), model_Vn.to(device)
+    if ((inference_device != device) or ((inference_batch is not None) and (device!='cpu'))) and (training_batch is None):
         discount_rewards_list = discount_rewards_list.to(device)
         observation_list = observation_list.to(device)
         action_list = action_list.to(device)
         advantage_list = advantage_list.to(device)
     
     optimizer_policy.zero_grad()
-    loss_policy = loss_fn(model_policy, observation_list, action_list, advantage_list, beta)    
+    
+    loss_policy = loss_fn(model_policy, observation_list, action_list, advantage_list, beta, training_batch, device)    
     loss_policy.backward()
     if gradient_clip_policy is not None:
         nn.utils.clip_grad_norm_(model_policy.parameters(), gradient_clip_policy)
@@ -223,7 +247,16 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     
     for _ in range(int(train_Vn)):
         optimizer_Vn.zero_grad()
-        Vn = torch.squeeze(model_Vn(observation_list))
+        
+        if training_batch is None:
+            Vn = torch.squeeze(model_Vn(observation_list))
+        else:
+            batch_num = math.ceil(len(observation_list)/training_batch)
+            Vn = []
+            for i in range(batch_num):
+                Vn.append(model_Vn(observation_list[i*training_batch:(i+1)*training_batch].to(device)).cpu())
+            Vn = torch.squeeze(torch.cat(Vn, dim=0))
+        
         loss_Vn = nn.MSELoss()(Vn, discount_rewards_list)
         loss_Vn.backward()
         if gradient_clip_Vn is not None:
@@ -238,7 +271,7 @@ def train(model_policy, model_Vn, save_name, env_name, lam, discount, beta, trai
           gradient_clip_policy=None, gradient_clip_Vn=None, median_stop_threshold=None,
           median_stop_patience=None, length=False, save_cycles=None, 
           policy_lr=0.001, policy_beta1=0.9, policy_beta2=0.999, policy_eps=1e-08, 
-          Vn_lr=0.001, Vn_beta1=0.9, Vn_beta2=0.999, Vn_eps=1e-08, device='cpu', inference_device='cpu'):
+          Vn_lr=0.001, Vn_beta1=0.9, Vn_beta2=0.999, Vn_eps=1e-08, inference_batch=None, training_batch=None, device='cpu', inference_device='cpu'):
     """
     Train the policy and value network models over multiple cycles.
 
@@ -270,6 +303,8 @@ def train(model_policy, model_Vn, save_name, env_name, lam, discount, beta, trai
     Vn_beta1 (float): Beta1 parameter for the value network optimizer (Adam).
     Vn_beta2 (float): Beta2 parameter for the value network optimizer (Adam).
     Vn_eps (float): Epsilon parameter for the value network optimizer (Adam).  
+    inference_batch (int, optional): If not None, makes sure batches are being used at inference time.
+    training_batch (int, optional): If not None, makes sure batches are being used at training time.
     device (str, optional): The device to run the training computations ('cpu' or 'cuda').
     inference_device (str, optional): The device to run the inference computations ('cpu' or 'cuda').
 
@@ -286,7 +321,7 @@ def train(model_policy, model_Vn, save_name, env_name, lam, discount, beta, trai
     for cycle in range(n_cycles):
         curr_sum, curr_len = train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
                                          optimizer_policy, optimizer_Vn, n_games_per_cycle, gradient_clip_policy,
-                                         gradient_clip_Vn, median_stop_threshold, median_stop_patience, device)
+                                         gradient_clip_Vn, median_stop_threshold, median_stop_patience, inference_batch, training_batch, device, inference_device)
         
         reward_sum[cycle,:] = curr_sum
         reward_len[cycle,:] = curr_len
@@ -341,7 +376,7 @@ if __name__ == "__main__":
         
     for key, value in settings.items():
         if not key in ["env_name", "device", "inference_device"] and value is not None:
-            if key in ["train_Vn", "n_cycles", "n_games_per_cycle", "report_updates", "median_stop_patience"]:
+            if key in ["train_Vn", "n_cycles", "n_games_per_cycle", "report_updates", "median_stop_patience", "training_batch", "inference_batch"]:
                 settings[key] = int(value)
             elif key == "length":
                 settings[key] = (value.lower()=="true")
