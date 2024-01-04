@@ -83,19 +83,17 @@ def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam
     """
     factor = lam*discount
     # Evaluate the value function for each observation
+    
+    current_device = device if inference_batch is None else 'cpu'
+    observations = torch.tensor(observations, dtype=torch.float32, device=current_device)
+    actions = torch.tensor(actions, dtype=torch.float32, device=current_device)
+    rewards = torch.tensor(rewards, dtype=torch.float32, device=current_device)
+    
     with torch.no_grad():
         if inference_batch is None:
-            observations = torch.tensor(observations, dtype=torch.float32, device=device)
-            actions = torch.tensor(actions, dtype=torch.float32, device=device)
-            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-            
             raw_Vn = torch.squeeze(model_Vn(observations))
         
-        else:
-            observations = torch.tensor(observations, dtype=torch.float32, device='cpu')
-            actions = torch.tensor(actions, dtype=torch.float32, device='cpu')
-            rewards = torch.tensor(rewards, dtype=torch.float32, device='cpu')
-            
+        else:            
             batch_num = math.ceil(len(observations)/inference_batch)   
             raw_Vn = []
             for i in range(batch_num):
@@ -113,9 +111,9 @@ def advantage_GAE(observations, actions, rewards, model_Vn, final, discount, lam
     delta = rewards + discount*Vn1 - Vn
     
     # Initialize tensors for advantages and discounted rewards
-    new_advantages = torch.zeros(len(delta), dtype=torch.float32, device=device) 
+    new_advantages = torch.zeros(len(delta), dtype=torch.float32, device=current_device) 
     new_advantages[-1] = delta[-1]
-    discount_rewards = torch.zeros(len(rewards), dtype=torch.float32, device=device)
+    discount_rewards = torch.zeros(len(rewards), dtype=torch.float32, device=current_device)
     discount_rewards[-1] = rewards[-1] + discount * Vn1[-1]
     
     # Calculate advantages and discounted rewards backwards
@@ -154,7 +152,7 @@ def loss_fn(model, observation_tensor, action_tensor, weight_tensor, beta, train
         for i in range(batch_num):
             logp.append(model.log_prob(observation_tensor[i*training_batch:(i+1)*training_batch].to(device), action_tensor[i*training_batch:(i+1)*training_batch].to(device)).cpu())
         logp = torch.squeeze(torch.cat(logp, dim=0))
-
+        
     # Calculate the policy gradient loss
     policy_loss = -(logp * weight_tensor).mean()
 
@@ -228,7 +226,7 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
             observation_list = torch.cat((observation_list, new_observations), dim=0)
             action_list = torch.cat((action_list, new_actions), dim=0)
             advantage_list = torch.cat((advantage_list, new_advantages), dim=0)
-    
+
     if inference_device != device:
         model_policy, model_Vn = model_policy.to(device), model_Vn.to(device)
     if ((inference_device != device) or ((inference_batch is not None) and (device!='cpu'))) and (training_batch is None):
@@ -236,7 +234,7 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
         observation_list = observation_list.to(device)
         action_list = action_list.to(device)
         advantage_list = advantage_list.to(device)
-    
+
     optimizer_policy.zero_grad()
     
     loss_policy = loss_fn(model_policy, observation_list, action_list, advantage_list, beta, training_batch, device)    
