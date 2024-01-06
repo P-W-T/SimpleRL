@@ -226,14 +226,15 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
             observation_list = torch.cat((observation_list, new_observations), dim=0)
             action_list = torch.cat((action_list, new_actions), dim=0)
             advantage_list = torch.cat((advantage_list, new_advantages), dim=0)
-
+    
     if inference_device != device:
         model_policy, model_Vn = model_policy.to(device), model_Vn.to(device)
-    if ((inference_device != device) or ((inference_batch is not None) and (device!='cpu'))) and (training_batch is None):
-        discount_rewards_list = discount_rewards_list.to(device)
-        observation_list = observation_list.to(device)
-        action_list = action_list.to(device)
-        advantage_list = advantage_list.to(device)
+    if (((inference_device=='cpu') or (inference_batch is not None)) and (device!='cpu') and (training_batch is None)) or (((inference_device!='cpu') and (inference_batch is None)) and ((device=='cpu') or (training_batch is not None))):
+        temp_device = device if training_batch is None else 'cpu'
+        discount_rewards_list = discount_rewards_list.to(temp_device)
+        observation_list = observation_list.to(temp_device)
+        action_list = action_list.to(temp_device)
+        advantage_list = advantage_list.to(temp_device)
 
     optimizer_policy.zero_grad()
     
