@@ -206,10 +206,10 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
     action_list = None
     advantage_list = None
     
-    model_policy, model_Vn = model_policy.to(inference_device), model_Vn.to(inference_device)
+    model_policy, model_Vn = model_policy.to('cpu'), model_Vn.to(inference_device)
     
     for i in range(n_games_per_cycle):        
-        observation_cur, action_cur, reward_cur, final = play_env(last_observation, env, model_policy, np.inf, inference_device)
+        observation_cur, action_cur, reward_cur, final = play_env(last_observation, env, model_policy, np.inf, 'cpu')
         last_observation = observation_cur[-1]
         reward_sum[i] = np.sum(reward_cur)
         reward_len[i] = len(reward_cur)      
@@ -227,8 +227,11 @@ def train_agent(model_policy, model_Vn, env_name, lam, discount, beta, train_Vn,
             action_list = torch.cat((action_list, new_actions), dim=0)
             advantage_list = torch.cat((advantage_list, new_advantages), dim=0)
     
+    
+    if device != 'cpu':
+        model_policy = model_policy.to(device)
     if inference_device != device:
-        model_policy, model_Vn = model_policy.to(device), model_Vn.to(device)
+        model_Vn = model_Vn.to(device)
     if (((inference_device=='cpu') or (inference_batch is not None)) and (device!='cpu') and (training_batch is None)) or (((inference_device!='cpu') and (inference_batch is None)) and ((device=='cpu') or (training_batch is not None))):
         temp_device = device if training_batch is None else 'cpu'
         discount_rewards_list = discount_rewards_list.to(temp_device)
