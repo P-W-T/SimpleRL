@@ -6,6 +6,7 @@ import itertools
 import copy
 import csv
 import pickle
+from timeit import default_timer as timer
 
 def generate_combinations(param_grid):
     # Extract the keys and the corresponding lists of possible values
@@ -17,7 +18,7 @@ def generate_combinations(param_grid):
     return combinations
 
 
-def gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_fn, score_summary_fn=np.mean, repeats=1):
+def gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_fn, score_summary_fn=np.mean, repeats=1, verbose=0):
     if repeats < 1:
         raise AssertionError('At least one run needed')
     
@@ -31,8 +32,10 @@ def gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwarg
     
     parameters_used = []
     scores = []
-    
-    for combination in parameter_combinations:
+    if verbose > 0:        
+        start = timer()
+        print(f"Start grid search: {len(parameter_combinations)} combinations")
+    for num, combination in enumerate(parameter_combinations):
         rep_policy = None
         rep_Vn = None
         rep_score = -1*np.inf   
@@ -42,7 +45,6 @@ def gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwarg
         for rep in range(repeats):
             current_policy = model_policy_fn(**model_policy_kwargs)
             current_Vn = model_Vn_fn(**model_Vn_kwargs)
-            
             results = train_fn(model_policy=current_policy, model_Vn=current_Vn, **combination, **other_args)
             current_score = score_fn(results)
             rep_score_list.append(current_score)
@@ -64,6 +66,14 @@ def gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwarg
             best_result = rep_result
             best_param = combination
         
+        if verbose > 0:        
+            end = timer()
+            current_time = end - start
+            minutes = int(current_time/60)
+            seconds = current_time - minutes*60
+            print(f"Grid search: {summary_score} - {num+1}/{len(parameter_combinations)} combinations - {minutes}m {seconds:2f}s")
+            start = end
+        
     return best_policy, best_Vn, best_result, best_param, best_score, parameters_used, scores
 
 
@@ -83,9 +93,9 @@ def score_fn_generator(cycles):
     return PG_score_fn
     
 
-def PG_gridsearch(result_name, model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_cycles, score_summary_fn=np.mean, repeats=1):
+def PG_gridsearch(result_name, model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_cycles, score_summary_fn=np.mean, repeats=1, verbose=0):
     score_fn = score_fn_generator(score_cycles)
-    best_policy, best_Vn, best_result, best_param, best_score, parameters_used, scores = gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_fn, score_summary_fn, repeats)
+    best_policy, best_Vn, best_result, best_param, best_score, parameters_used, scores = gridsearch(model_policy_fn, model_Vn_fn, model_policy_kwargs, model_Vn_kwargs, param_grid, other_args, train_fn, score_fn, score_summary_fn, repeats, verbose)
     
     torch.save(best_policy, result_name + "_policy.pt")
     torch.save(best_Vn, result_name + "_Vn.pt")        
